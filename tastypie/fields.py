@@ -4,6 +4,7 @@ from decimal import Decimal
 import re
 from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned
 from django.utils import datetime_safe, importlib
+from django.utils.encoding import force_unicode
 from tastypie.bundle import Bundle
 from tastypie.exceptions import ApiFieldError, NotFound
 from tastypie.utils import dict_strip_unicode_keys, make_aware
@@ -179,7 +180,7 @@ class CharField(ApiField):
         if value is None:
             return None
 
-        return unicode(value)
+        return force_unicode(value)
 
 
 class FileField(ApiField):
