@@ -78,7 +78,7 @@ class SimpleCache(NoCache):
         uses the resource's default timeout.
         """
 
-        if timeout == None:
+        if timeout is None:
             timeout = self.timeout
 
         self.cache.set(key, value, timeout)
