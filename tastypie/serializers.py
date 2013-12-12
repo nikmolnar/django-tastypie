@@ -7,6 +7,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.core.serializers import json
 from django.utils import simplejson
 from django.utils import six
+from django.utils import dateformat
 from django.utils.encoding import force_text, smart_bytes
 
 from tastypie.bundle import Bundle
@@ -141,7 +142,7 @@ class Serializer(object):
         Default is ``iso-8601``, which looks like "2010-12-16T03:02:14".
         """
         if self.datetime_formatting == 'rfc-2822':
-            return format_datetime(data)
+            return dateformat.format(data, 'r')
         data = make_naive(data)
         if self.datetime_formatting == 'iso-8601-strict':
             # Remove microseconds to strictly adhere to iso-8601
