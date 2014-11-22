@@ -811,7 +811,10 @@ class Resource(six.with_metaclass(DeclarativeMetaclass)):
         chomped_uri = chomped_uri[found_at:]
         try:
             for url_resolver in getattr(self, 'urls', []):
-                result = url_resolver.resolve(chomped_uri)
+                try:
+                    result = url_resolver.resolve(chomped_uri)
+                except Resolver404:
+                    continue
 
                 if result is not None:
                     view, args, kwargs = result
