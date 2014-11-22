@@ -587,6 +587,16 @@ class DateTimeFieldTestCase(TestCase):
         field_4.instance_name = 'datetime'
         self.assertEqual(field_4.hydrate(bundle_4), None)
 
+        bundle_5 = Bundle(data={'datetime': 'foo'})
+        field_5 = DateTimeField()
+        field_5.instance_name = 'datetime'
+        self.assertRaises(ApiFieldError, field_5.hydrate, bundle_5)
+
+        bundle_6 = Bundle(data={'datetime': ['a', 'list', 'used', 'to', 'crash']})
+        field_6 = DateTimeField()
+        field_6.instance_name = 'datetime'
+        self.assertRaises(ApiFieldError, field_6.hydrate, bundle_6)
+
 
 class UserResource(ModelResource):
     class Meta:
@@ -710,6 +720,9 @@ class ToOneFieldTestCase(TestCase):
 
         field_2 = ToManyField(UserResource, lambda bundle: User.objects.filter(pk=1))
         self.assertEqual(field_2.dehydrate(bundle), ['/api/v1/users/1/'])
+
+        field_3 = ToOneField(UserResource, lambda bundle:None)
+        self.assertRaises(ApiFieldError, field_3.dehydrate, bundle)
 
     def test_dehydrate_full_detail_list(self):
         note = Note.objects.get(pk=1)
