@@ -58,14 +58,14 @@ A common pattern is needing to limit a queryset by something that changes
 per-request, for instance the date/time. You can accomplish this by lightly
 modifying ``get_object_list``::
 
-    from tastypie.utils import now
+    from django.utils import timezone
 
     class MyResource(ModelResource):
         class Meta:
             queryset = MyObject.objects.all()
 
         def get_object_list(self, request):
-            return super(MyResource, self).get_object_list(request).filter(start_date__gte=now)
+            return super(MyResource, self).get_object_list(request).filter(start_date__gte=timezone.now())
 
 
 Using Your ``Resource`` In Regular Views
@@ -74,7 +74,8 @@ Using Your ``Resource`` In Regular Views
 In addition to using your resource classes to power the API, you can also use
 them to write other parts of your application, such as your views. For
 instance, if you wanted to encode user information in the page for some
-Javascript's use, you could do the following::
+Javascript's use, you could do the following. In this case, ``user_json`` will
+not include a valid ``resource_uri``::
 
     # views.py
     from django.shortcuts import render_to_response
@@ -82,16 +83,52 @@ Javascript's use, you could do the following::
 
 
     def user_detail(request, username):
-        ur = UserResource()
-        user = ur.obj_get(username=username)
+        res = UserResource()
+        request_bundle = res.build_bundle(request=request)
+        user = res.obj_get(request_bundle, username=username)
 
         # Other things get prepped to go into the context then...
 
-        ur_bundle = ur.build_bundle(obj=user, request=request)
-        return render_to_response('myapp/user_detail.html', {
+        user_bundle = res.build_bundle(request=request, obj=user)
+        user_json = res.serialize(None, res.full_dehydrate(user_bundle), "application/json")
+
+        return render_to_response("myapp/user_detail.html", {
             # Other things here.
-            "user_json": ur.serialize(None, ur.full_dehydrate(ur_bundle), 'application/json'),
+            "user_json": user_json,
         })
+
+To include a valid ``resource_uri``, the resource must be associated
+with an ``tastypie.Api`` instance, as below::
+
+    # urls.py
+    from tastypie.api import Api
+    from myapp.api.resources import UserResource
+
+
+    my_api = Api(api_name='v1')
+    my_api.register(UserResource())
+
+::
+
+    # views.py
+    from myapp.urls import my_api
+
+
+    def user_detail(request, username):
+        res = my_api.canonical_resource_for('user')
+        # continue as above...
+
+Alternatively, to get a valid ``resource_uri`` you may pass in the ``api_name``
+parameter directly to the Resource::
+
+    # views.py
+    from django.shortcuts import render_to_response
+    from myapp.api.resources import UserResource
+
+
+    def user_detail(request, username):
+        res = UserResource(api_name='v1')
+        # continue as above...
 
 Example of getting a list of users::
 
@@ -161,7 +198,7 @@ Another alternative approach is to override the ``dispatch`` method::
             return super(EntryResource, self).dispatch(request_type, request, **kwargs)
 
     # urls.py
-    from django.conf.urls.defaults import *
+    from django.conf.urls import url, patterns, include
     from myapp.api import EntryResource
 
     entry_resource = EntryResource()
@@ -197,7 +234,7 @@ handle the children::
                 return HttpMultipleChoices("More than one resource is found at this URI.")
 
             child_resource = ChildResource()
-            return child_resource.get_detail(request, parent_id=obj.pk)
+            return child_resource.get_list(request, parent_id=obj.pk)
 
 
 Adding Search Functionality
@@ -208,7 +245,7 @@ approach uses Haystack_, though you could hook it up to any search technology.
 We leave the CRUD methods of the resource alone, choosing to add a new endpoint
 at ``/api/v1/notes/search/``::
 
-    from django.conf.urls.defaults import *
+    from django.conf.urls import url, patterns, include
     from django.core.paginator import Paginator, InvalidPage
     from django.http import Http404
     from haystack.query import SearchQuerySet
@@ -295,6 +332,8 @@ where Tastypie uses underscore syntax, which can lead to "ugly" looking
 code in Javascript. You can create a custom serializer that emits
 values in camelCase instead::
 
+    import re
+    import simplejson
     from tastypie.serializers import Serializer
 
     import re

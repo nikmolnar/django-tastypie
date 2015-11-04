@@ -45,7 +45,7 @@ We'll assume that we're interacting with the following Tastypie code::
 
 
     # urls.py
-    from django.conf.urls.defaults import *
+    from django.conf.urls import url, patterns, include
     from tastypie.api import Api
     from myapp.api.resources import EntryResource, UserResource
 
@@ -138,6 +138,34 @@ To which you'd receive::
 
 We'll stick to JSON for the rest of this document, but using XML should be OK
 to do at any time.
+
+It's also possible to get all schemas (`Inspecting The Resource's Schema`_) in a single request::
+
+    curl http://localhost:8000/api/v1/?fullschema=true
+
+You'll get back something like::
+
+    {
+        "entry": {
+            "list_endpoint": "/api/v1/entry/",
+            "schema": {
+                "default_format": "application/json",
+                "fields": {
+                    "body": {
+                        "help_text": "Unicode string data. Ex: \"Hello World\"",
+                        "nullable": false,
+                        "readonly": false,
+                        "type": "string"
+                    },
+                    ...
+                },
+                "filtering": {
+                    "pub_date": ["exact", "lt", "lte", "gte", "gt"],
+                    "user": 2
+                }
+            }
+        },
+    }
 
 
 .. _schema-inspection:

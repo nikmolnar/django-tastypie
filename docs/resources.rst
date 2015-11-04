@@ -95,7 +95,6 @@ As an example, we'll walk through what a GET request to a list endpoint (say
   * the requested HTTP method is in ``allowed_methods`` (``method_check``),
   * the class has a method that can handle the request (``get_list``),
   * the user is authenticated (``is_authenticated``),
-  * the user is authorized (``is_authorized``),
   * & the user has not exceeded their throttle (``throttle_check``).
 
   At this point, ``dispatch`` actually calls the requested method (``get_list``).
@@ -952,16 +951,6 @@ HTTP methods to check against. Usually, this looks like::
     # GET.
     self.method_check(request, ['get'])
 
-``is_authorized``
------------------
-
-.. method:: Resource.is_authorized(self, request, object=None)
-
-Handles checking of permissions to see if the user has authorization
-to GET, POST, PUT, or DELETE this resource.  If ``object`` is provided,
-the authorization backend can apply additional row-level permissions
-checking.
-
 ``is_authenticated``
 --------------------
 
@@ -1102,10 +1091,24 @@ simply override this method.
 
 .. method:: Resource.full_dehydrate(self, bundle, for_list=False)
 
-Given a bundle with an object instance, extract the information from it to
-populate the resource.
+Populate the bundle's :attr:`data` attribute.
 
-The for_list flag is used to control which fields are excluded by the ``use_in`` attribute.
+The ``bundle`` parameter will have the data that needs dehydrating in its
+:attr:`obj` attribute.
+
+The ``for_list`` parameter indicates the style of response being prepared:
+    - ``True`` indicates a list of items. Note that :meth:`full_dehydrate` will
+      be called once for each object requested.
+    - ``False`` indicates a response showing the details for an item
+
+This method is responsible for invoking the the :meth:`dehydrate` method of
+all the fields in the resource. Additionally, it calls
+:meth:`Resource.dehydrate`.
+
+Must return a :class:`Bundle` with the desired dehydrated :attr:`data`
+(usually a :class:`dict`). Typically one should modify the bundle passed in
+and return it, but you may also return a completely new bundle.
+
 
 ``dehydrate``
 -------------
@@ -1418,7 +1421,7 @@ with the provided the data to create the new collection.
 Return ``HttpNoContent`` (204 No Content) if
 ``Meta.always_return_data = False`` (default).
 
-Return ``HttpAccepted`` (202 Accepted) if
+Return ``HttpAccepted`` (200 OK) if
 ``Meta.always_return_data = True``.
 
 ``put_detail``
@@ -1440,8 +1443,8 @@ If an existing resource is modified and
 ``Meta.always_return_data = False`` (default), return ``HttpNoContent``
 (204 No Content).
 If an existing resource is modified and
-``Meta.always_return_data = True``, return ``HttpAccepted`` (202
-Accepted).
+``Meta.always_return_data = True``, return ``HttpAccepted`` (200
+OK).
 
 ``post_list``
 -------------

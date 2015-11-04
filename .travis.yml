@@ -1,34 +1,77 @@
+sudo: false
+
 language: python
 
 python:
-  - "2.6"
   - "2.7"
   - "3.3"
   - "3.4"
+  - "2.6"
 
 env:
+  - MODE=flake8
+  - MODE=flake8-strict
+  - MODE=docs
   - DJANGO_VERSION=1.5
   - DJANGO_VERSION=1.6
   - DJANGO_VERSION=1.7
+  - DJANGO_VERSION=1.8
   - DJANGO_VERSION=dev
 
 matrix:
   allow_failures:
     - env: DJANGO_VERSION=dev
-    - env: DJANGO_VERSION=1.7
+    - env: MODE=flake8-strict
   exclude:
+    - python: "2.6"
+      env: MODE=flake8
+    - python: "3.3"
+      env: MODE=flake8
+    - python: "3.4"
+      env: MODE=flake8
+    - python: "2.6"
+      env: MODE=flake8-strict
+    - python: "3.3"
+      env: MODE=flake8-strict
+    - python: "3.4"
+      env: MODE=flake8-strict
+    - python: "2.6"
+      env: MODE=docs
+    - python: "3.3"
+      env: MODE=docs
     - env: DJANGO_VERSION=dev
+      python: "2.6"
+    - env: DJANGO_VERSION=1.8
       python: "2.6"
     - env: DJANGO_VERSION=1.7
       python: "2.6"
 
-before_install:
-    - sudo apt-get install python-sphinx python3-sphinx
+addons:
+  apt:
+    packages:
+    - binutils
+    - libproj-dev
+    - gdal-bin
+    - spatialite-bin
+    - libspatialite-dev
+
+cache:
+  directories:
+    - $HOME/.cache/pip
+
+before_cache:
+  - rm -f $HOME/.cache/pip/log/debug.log
 
 # command to install dependencies
 install:
-    - pip install tox
+    - export PIP_DOWNLOAD_CACHE=$HOME/.cache/pip
+    - pip install -U pip wheel virtualenv
+    - pip install tox coveralls
+
+after_success:
+    - coveralls
 
 # command to run tests
 script:
-    - tox -e py${TRAVIS_PYTHON_VERSION/./}-${DJANGO_VERSION},docs
+    - coverage erase
+    - tox -e py${TRAVIS_PYTHON_VERSION/./}-${DJANGO_VERSION}${MODE}

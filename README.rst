@@ -2,9 +2,29 @@
 django-tastypie
 ===============
 
+.. image:: https://readthedocs.org/projects/django-tastypie/badge/
+    :target: https://django-tastypie.readthedocs.org/
+    :alt: Docs
+
+.. image:: https://travis-ci.org/django-tastypie/django-tastypie.svg
+    :target: https://travis-ci.org/django-tastypie/django-tastypie
+    :alt: CI
+
+.. image:: https://coveralls.io/repos/django-tastypie/django-tastypie/badge.svg?service=github
+    :target: https://coveralls.io/github/django-tastypie/django-tastypie
+    :alt: Code Coverage
+
+.. image:: https://img.shields.io/pypi/v/django-tastypie.svg
+    :target: https://pypi.python.org/pypi/django-tastypie
+    :alt: Version
+
+.. image:: https://img.shields.io/pypi/dm/django-tastypie.svg
+    :target: https://pypi.python.org/pypi/django-tastypie
+    :alt: Downloads
+
 Creating delicious APIs for Django apps since 2010.
 
-Currently in beta (v0.12.0) but being used actively in production on several
+Currently in beta (v0.12.2) but being used actively in production on several
 sites.
 
 
@@ -15,7 +35,7 @@ Core
 ----
 
 * Python 2.6+ or Python 3.3+
-* Django 1.5+
+* Django 1.5 through Django 1.8
 * dateutil (http://labix.org/python-dateutil) >= 2.1
 
 Format Support

@@ -1,11 +1,13 @@
-import os, sys
+import os
+import sys
 
-from os.path import abspath, dirname, join
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 ADMINS = (
     ('test@example.com', 'Mr. Test'),
 )
+
+SITE_ID = 1
 
 BASE_PATH = os.path.abspath(os.path.dirname(__file__))
 
@@ -51,14 +53,13 @@ LOGGING = {
     'disable_existing_loggers': False,
     'loggers': {
         'py.warnings': {
-            'level': 'ERROR',# change to WARNING to show DeprecationWarnings, etc.
+            'level': 'ERROR',  # change to WARNING to show DeprecationWarnings, etc.
         },
     },
 }
 
 TASTYPIE_FULL_DEBUG = False
 
-# to make sure timezones are handled correctly in Django>=1.4
 USE_TZ = True
 
 MIDDLEWARE_CLASSES = (

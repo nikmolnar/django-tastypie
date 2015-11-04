@@ -1,4 +1,3 @@
-import datetime
 from django.contrib.auth.models import User
 from django.db import models
 from django import forms
@@ -32,7 +31,7 @@ class AnnotatedNote(models.Model):
             title = self.note.title
         except Note.DoesNotExist:
             pass
-        
+
         return u"Annotated %s" % title
 
 
@@ -49,3 +48,4 @@ class SlugBasedNote(models.Model):
 class UserForm(forms.ModelForm):
     class Meta:
         model = User
+        exclude = []

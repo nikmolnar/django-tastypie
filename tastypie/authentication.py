@@ -160,12 +160,9 @@ class ApiKeyAuthentication(Authentication):
         return HttpUnauthorized()
 
     def extract_credentials(self, request):
-        if request.META.get('HTTP_AUTHORIZATION') and request.META['HTTP_AUTHORIZATION'].lower().startswith('apikey '):
-            (auth_type, data) = request.META['HTTP_AUTHORIZATION'].split()
-
-            if auth_type.lower() != 'apikey':
-                raise ValueError("Incorrect authorization header.")
-
+        authorization = request.META.get('HTTP_AUTHORIZATION', '')
+        if authorization and authorization.lower().startswith('apikey '):
+            auth_type, data = authorization.split()
             username, api_key = data.split(':', 1)
         else:
             username = request.GET.get('username') or request.POST.get('username')
@@ -194,7 +191,7 @@ class ApiKeyAuthentication(Authentication):
 
         try:
             lookup_kwargs = {username_field: username}
-            user = User.objects.get(**lookup_kwargs)
+            user = User.objects.select_related('api_key').get(**lookup_kwargs)
         except (User.DoesNotExist, User.MultipleObjectsReturned):
             return self._unauthorized()
 
@@ -215,7 +212,8 @@ class ApiKeyAuthentication(Authentication):
         from tastypie.models import ApiKey
 
         try:
-            ApiKey.objects.get(user=user, key=api_key)
+            if user.api_key.key != api_key:
+                return self._unauthorized()
         except ApiKey.DoesNotExist:
             return self._unauthorized()
 
@@ -335,7 +333,7 @@ class DigestAuthentication(Authentication):
             return self._unauthorized()
 
         try:
-            (auth_type, data) = request.META['HTTP_AUTHORIZATION'].split(' ', 1)
+            auth_type, data = request.META['HTTP_AUTHORIZATION'].split(' ', 1)
 
             if auth_type.lower() != 'digest':
                 return self._unauthorized()
@@ -428,7 +426,7 @@ class OAuthAuthentication(Authentication):
             raise ImproperlyConfigured("The 'django-oauth-plus' package could not be imported. It is required for use with the 'OAuthAuthentication' class.")
 
     def is_authenticated(self, request, **kwargs):
-        from oauth_provider.store import store, InvalidTokenError
+        from oauth_provider.store import store
 
         if self.is_valid_request(request):
             oauth_request = oauth_provider.utils.get_oauth_request(request)

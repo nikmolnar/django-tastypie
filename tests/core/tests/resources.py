@@ -2,10 +2,11 @@ import base64
 import copy
 import datetime
 from decimal import Decimal
-import django
 import json
 from mock import patch
+import time
 
+import django
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.cache import cache
@@ -15,8 +16,9 @@ from django.core.urlresolvers import reverse
 from django import forms
 from django.http import HttpRequest, QueryDict, Http404
 from django.test import TestCase
+from django.test.testcases import skipIf
 from django.utils.encoding import force_text
-from django.utils import six
+from django.utils import timezone
 
 from tastypie.authentication import BasicAuthentication
 from tastypie.authorization import Authorization
@@ -29,9 +31,9 @@ from tastypie.serializers import Serializer
 from tastypie.throttle import CacheThrottle
 from tastypie.utils import aware_datetime, make_naive
 from tastypie.validation import FormValidation
-from core.models import Note, NoteWithEditor, Subject, MediaBit, AutoNowNote, DateRecord, Counter
+from core.models import Note, NoteWithEditor, Subject, MediaBit, AutoNowNote, DateRecord, Counter, MyDefaultPKModel, MyUUIDModel
 from core.tests.mocks import MockRequest
-from core.utils import SimpleHandler
+from core.utils import adjust_schema, SimpleHandler
 
 
 class CustomSerializer(Serializer):
@@ -85,7 +87,7 @@ class BasicResourceWithDifferentListAndDetailFieldsCallable(Resource):
 
 
 class BasicResource(Resource):
-    name = fields.CharField(attribute='name')
+    name = fields.CharField(attribute='name', verbose_name="Basic name")
     view_count = fields.IntegerField(attribute='view_count', default=0)
     date_joined = fields.DateTimeField(null=True)
 
@@ -249,6 +251,25 @@ class ConvertTestCase(TestCase):
 
 
 class ResourceTestCase(TestCase):
+    def test_deserialize(self):
+        request = MockRequest()
+        request.META['CONTENT_TYPE'] = 'application/xml'
+        request.set_body('<objects></objects>')
+
+        basic = BasicResource()
+        data = basic.deserialize(request, request.body)
+
+        self.assertEqual(data, [])
+
+    def test_deserialize_no_contenttype_header(self):
+        request = MockRequest()
+        request.set_body('[]')
+
+        basic = BasicResource()
+        data = basic.deserialize(request, request.body)
+
+        self.assertEqual(data, [])
+
     def test_fields(self):
         basic = BasicResource()
         self.assertEqual(len(basic.fields), 4)
@@ -338,18 +359,13 @@ class ResourceTestCase(TestCase):
         basic = BasicResourceWithDifferentListAndDetailFields()
         test_bundle_1 = basic.build_bundle(obj=test_object_1)
 
-        # Sanity check.
-        self.assertEqual(basic.name.value, None)
-        self.assertEqual(basic.view_count.value, None)
-        self.assertEqual(basic.date_joined.value, None)
-
-        #check hydration with details
+        # check hydration with details
         bundle_1 = basic.full_dehydrate(test_bundle_1)
         self.assertEqual(bundle_1.data['name'], 'Daniel')
         self.assertEqual(bundle_1.data['view_count'], 12)
         self.assertEqual(bundle_1.data.get('date_joined'), None)
 
-        #now check dehydration with lists
+        # now check dehydration with lists
         test_bundle_2 = basic.build_bundle(obj=test_object_1)
 
         bundle_2 = basic.full_dehydrate(test_bundle_2, for_list=True)
@@ -367,19 +383,14 @@ class ResourceTestCase(TestCase):
         basic = BasicResourceWithDifferentListAndDetailFieldsCallable()
         test_bundle_1 = basic.build_bundle(obj=test_object_1)
 
-        # Sanity check.
-        self.assertEqual(basic.name.value, None)
-        self.assertEqual(basic.view_count.value, None)
-        self.assertEqual(basic.date_joined.value, None)
-
-        #check hydration with details
+        # check hydration with details
         bundle_1 = basic.full_dehydrate(test_bundle_1)
         self.assertEqual(bundle_1.data['name'], 'Daniel')
         self.assertEqual(bundle_1.data['view_count'], 12)
         self.assertEqual(bundle_1.data.get('date_joined'), None)
 
-        #now check dehydration with lists. Should be the same as details since
-        #we are using callables for the use_in
+        # now check dehydration with lists. Should be the same as details since
+        # we are using callables for the use_in
         test_bundle_2 = basic.build_bundle(obj=test_object_1)
 
         bundle_2 = basic.full_dehydrate(test_bundle_2, for_list=True)
@@ -396,11 +407,6 @@ class ResourceTestCase(TestCase):
 
         basic = BasicResource()
         test_bundle_1 = basic.build_bundle(obj=test_object_1)
-
-        # Sanity check.
-        self.assertEqual(basic.name.value, None)
-        self.assertEqual(basic.view_count.value, None)
-        self.assertEqual(basic.date_joined.value, None)
 
         bundle_1 = basic.full_dehydrate(test_bundle_1)
         self.assertEqual(bundle_1.data['name'], 'Daniel')
@@ -555,17 +561,10 @@ class ResourceTestCase(TestCase):
         bundles_seen = []
         self.assertRaises(NotImplementedError, basic.rollback, bundles_seen)
 
-    def adjust_schema(self, schema_dict):
-        for field, field_info in schema_dict['fields'].items():
-            if isinstance(field_info['default'], fields.NOT_PROVIDED):
-                schema_dict['fields'][field]['default'] = 'No default provided.'
-
-        return schema_dict
-
     def test_build_schema(self):
         basic = BasicResource()
-        schema = self.adjust_schema(basic.build_schema())
-        self.assertEqual(schema, {
+        schema = adjust_schema(basic.build_schema())
+        expected_schema = {
             'allowed_detail_http_methods': ['get', 'post', 'put', 'delete', 'patch'],
             'allowed_list_http_methods': ['get', 'post', 'put', 'delete', 'patch'],
             'default_format': 'application/json',
@@ -576,45 +575,54 @@ class ResourceTestCase(TestCase):
                     'default': 'No default provided.',
                     'help_text': 'A date & time as a string. Ex: "2010-11-10T03:07:43"',
                     'nullable': True,
+                    'verbose_name': "date joined",
                     'readonly': False,
                     'type': 'datetime',
-                    'unique': False
+                    'unique': False,
+                    'primary_key': False,
                 },
                 'name': {
                     'blank': False,
                     'default': 'No default provided.',
                     'help_text': 'Unicode string data. Ex: "Hello World"',
                     'nullable': False,
+                    'verbose_name': "Basic name",
                     'readonly': False,
                     'type': 'string',
-                    'unique': False
+                    'unique': False,
+                    'primary_key': False,
                 },
                 'resource_uri': {
                     'blank': False,
                     'default': 'No default provided.',
                     'help_text': 'Unicode string data. Ex: "Hello World"',
                     'nullable': False,
+                    'verbose_name': "resource uri",
                     'readonly': True,
                     'type': 'string',
-                    'unique': False
+                    'unique': False,
+                    'primary_key': False,
                 },
                 'view_count': {
                     'blank': False,
                     'default': 0,
                     'help_text': 'Integer data. Ex: 2673',
                     'nullable': False,
+                    'verbose_name': 'view count',
                     'readonly': False,
                     'type': 'integer',
-                    'unique': False
+                    'unique': False,
+                    'primary_key': False,
                 }
             }
-        })
+        }
+        self.assertEqual(schema, expected_schema)
 
         basic = BasicResource()
         basic._meta.ordering = ['date_joined', 'name']
         basic._meta.filtering = {'date_joined': ['gt', 'gte'], 'name': ALL}
-        schema = self.adjust_schema(basic.build_schema())
-        self.assertEqual(schema, {
+        schema = adjust_schema(basic.build_schema())
+        expected_schema = {
             'filtering': {
                 'name': 1,
                 'date_joined': ['gt', 'gte']
@@ -625,44 +633,57 @@ class ResourceTestCase(TestCase):
                 'view_count': {
                     'nullable': False,
                     'default': 0,
+                    'help_text': 'Integer data. Ex: 2673',
+                    'verbose_name': "view count",
                     'readonly': False,
                     'blank': False,
                     'help_text': 'Integer data. Ex: 2673',
                     'unique': False,
-                    'type': 'integer'
+                    'type': 'integer',
+                    "primary_key": False
                 },
                 'date_joined': {
                     'nullable': True,
                     'default': 'No default provided.',
+                    'help_text': 'A date & time as a string. Ex: "2010-11-10T03:07:43"',
+                    'verbose_name': "date joined",
                     'readonly': False,
                     'blank': False,
                     'help_text': 'A date & time as a string. Ex: "2010-11-10T03:07:43"',
                     'unique': False,
-                    'type': 'datetime'
+                    'type': 'datetime',
+                    "primary_key": False
                 },
                 'name': {
                     'nullable': False,
                     'default': 'No default provided.',
+                    'help_text': 'Unicode string data. Ex: "Hello World"',
+                    'verbose_name': "Basic name",
                     'readonly': False,
                     'blank': False,
                     'help_text': 'Unicode string data. Ex: "Hello World"',
                     'unique': False,
-                    'type': 'string'
+                    'type': 'string',
+                    "primary_key": False
                 },
                 'resource_uri': {
                     'nullable': False,
                     'default': 'No default provided.',
+                    'help_text': 'Unicode string data. Ex: "Hello World"',
+                    'verbose_name': "resource uri",
                     'readonly': True,
                     'blank': False,
                     'help_text': 'Unicode string data. Ex: "Hello World"',
                     'unique': False,
-                    'type': 'string'
+                    'type': 'string',
+                    "primary_key": False
                 }
             },
             'default_format': 'application/json',
             'default_limit': 20,
             'allowed_list_http_methods': ['get', 'post', 'put', 'delete', 'patch']
-        })
+        }
+        self.assertEqual(schema, expected_schema)
 
     def test_subclassing(self):
         class CommonMeta:
@@ -825,13 +846,14 @@ class NoteResource(ModelResource):
         }
         ordering = ['title', 'slug', 'resource_uri']
         queryset = Note.objects.filter(is_active=True)
-        serializer = Serializer(formats=['json', 'jsonp', 'xml', 'yaml', 'html', 'plist'])
+        serializer = Serializer(formats=['json', 'jsonp', 'xml', 'yaml', 'plist'])
 
     def get_resource_uri(self, bundle_or_obj=None, url_name='api_dispatch_list'):
         if bundle_or_obj is None:
             return '/api/v1/notes/'
 
         return '/api/v1/notes/%s/' % bundle_or_obj.obj.id
+
 
 class NoQuerysetNoteResource(ModelResource):
     class Meta:
@@ -877,6 +899,36 @@ class AlwaysDataNoteResourceUseIn(NoteResource):
         queryset = Note.objects.filter(is_active=True)
         always_return_data = True
         authorization = Authorization()
+
+
+class NoteResourceNonUniqueDetailUriName(NoteResource):
+    author = fields.CharField(attribute='author__username', use_in="detail")
+    constant = fields.IntegerField(default=20, use_in="list")
+
+    class Meta:
+        resource_name = 'nonuniqueidnote'
+        queryset = Note.objects.filter(is_active=True)
+        always_return_data = True
+        authorization = Authorization()
+        detail_uri_name = 'slug'
+
+
+class MyDefaultPKModelResource(ModelResource):
+    class Meta:
+        resource_name = 'mydefaultpkmodel'
+        queryset = MyDefaultPKModel.objects.all()
+        always_return_data = True
+        authorization = Authorization()
+
+
+if MyUUIDModel:
+    class MyUUIDModelResourceNonUniqueDetailUriName(ModelResource):
+        class Meta:
+            resource_name = 'nonuniqueidmyuuidmodel'
+            queryset = MyUUIDModel.objects.all()
+            always_return_data = True
+            authorization = Authorization()
+            detail_uri_name = 'anotheruuid'
 
 
 class VeryCustomNoteResource(NoteResource):
@@ -932,6 +984,7 @@ class AlwaysUserNoteResource(NoteResource):
     def get_object_list(self, request):
         return super(AlwaysUserNoteResource, self).get_object_list(request).filter(author=request.user)
 
+
 class UseInNoteResource(NoteResource):
 
     content = fields.CharField(attribute='content', use_in='detail')
@@ -940,6 +993,7 @@ class UseInNoteResource(NoteResource):
     class Meta:
         queryset = Note.objects.all()
         authorization = Authorization()
+
 
 class UserResource(ModelResource):
     class Meta:
@@ -964,7 +1018,7 @@ class DetailedNoteResource(ModelResource):
             'title': ALL,
             'slug': ['exact'],
             'user': ALL,
-            'hello_world': ['exact'], # Note this is invalid for filtering.
+            'hello_world': ['exact'],  # Note this is invalid for filtering.
         }
         ordering = ['title', 'slug', 'user']
         queryset = Note.objects.filter(is_active=True)
@@ -976,10 +1030,12 @@ class DetailedNoteResource(ModelResource):
 
         return '/api/v1/notes/%s/' % bundle_or_obj.obj.id
 
+
 class DetailedNoteResourceWithHydrate(DetailedNoteResource):
     def hydrate(self, bundle):
         bundle.data['user'] = bundle.request.user  # This should fail using TastyPie 0.9.11 if triggered in patch_list
         return bundle
+
 
 class RequiredFKNoteResource(ModelResource):
     editor = fields.ForeignKey(UserResource, 'editor')
@@ -1045,7 +1101,7 @@ class SubjectResource(ModelResource):
 
 
 class RelatedNoteResource(ModelResource):
-    author = fields.ForeignKey(UserResource, 'author')
+    author = fields.ForeignKey(UserResource, 'author', verbose_name='The Author')
     subjects = fields.ManyToManyField(SubjectResource, 'subjects')
 
     class Meta:
@@ -1292,13 +1348,16 @@ class ModelResourceTestCase(TestCase):
         else:
             self.body_attr = "raw_post_data"
 
+    def tearDown(self):
+        cache.clear()
+
     @patch('django.core.signals.got_request_exception.send')
     @patch('tastypie.resources.ModelResource.obj_get_list', side_effect=IOError)
     def test_exception_handling(self, obj_get_list_mock, send_signal_mock):
         request = HttpRequest()
         request.method = 'GET'
         resource = NoteResource()
-        res = resource.wrap_view('dispatch_list')(request)
+        resource.wrap_view('dispatch_list')(request)
         self.assertTrue(obj_get_list_mock.called, msg="Test invalid: obj_get_list should have been dispatched")
         self.assertTrue(send_signal_mock.called, msg="got_request_exception was not called after an error")
 
@@ -1412,7 +1471,6 @@ class ModelResourceTestCase(TestCase):
         self.assertEqual(annr.fields['content'].null, False)
         self.assertEqual(annr.fields['content'].readonly, False)
         self.assertEqual(annr.fields['content'].unique, False)
-        self.assertEqual(annr.fields['content'].value, None)
 
         self.assertTrue(isinstance(annr.fields['created'], fields.DateTimeField))
         self.assertEqual(annr.fields['created'].attribute, 'created')
@@ -1422,7 +1480,6 @@ class ModelResourceTestCase(TestCase):
         self.assertEqual(annr.fields['created'].null, True)
         self.assertEqual(annr.fields['created'].readonly, False)
         self.assertEqual(annr.fields['created'].unique, False)
-        self.assertEqual(annr.fields['created'].value, None)
 
         self.assertTrue(isinstance(annr.fields['id'], fields.IntegerField))
         self.assertEqual(annr.fields['id'].attribute, 'id')
@@ -1432,7 +1489,6 @@ class ModelResourceTestCase(TestCase):
         self.assertEqual(annr.fields['id'].null, False)
         self.assertEqual(annr.fields['id'].readonly, False)
         self.assertEqual(annr.fields['id'].unique, True)
-        self.assertEqual(annr.fields['id'].value, None)
 
         self.assertTrue(isinstance(annr.fields['is_active'], fields.BooleanField))
         self.assertEqual(annr.fields['is_active'].attribute, 'is_active')
@@ -1442,7 +1498,6 @@ class ModelResourceTestCase(TestCase):
         self.assertEqual(annr.fields['is_active'].null, False)
         self.assertEqual(annr.fields['is_active'].readonly, False)
         self.assertEqual(annr.fields['is_active'].unique, False)
-        self.assertEqual(annr.fields['is_active'].value, None)
 
         self.assertTrue(isinstance(annr.fields['resource_uri'], fields.CharField))
         self.assertEqual(annr.fields['resource_uri'].attribute, None)
@@ -1452,7 +1507,6 @@ class ModelResourceTestCase(TestCase):
         self.assertEqual(annr.fields['resource_uri'].null, False)
         self.assertEqual(annr.fields['resource_uri'].readonly, True)
         self.assertEqual(annr.fields['resource_uri'].unique, False)
-        self.assertEqual(annr.fields['resource_uri'].value, None)
 
         self.assertTrue(isinstance(annr.fields['slug'], fields.CharField))
         self.assertEqual(annr.fields['slug'].attribute, 'slug')
@@ -1462,7 +1516,6 @@ class ModelResourceTestCase(TestCase):
         self.assertEqual(annr.fields['slug'].null, False)
         self.assertEqual(annr.fields['slug'].readonly, False)
         self.assertEqual(annr.fields['slug'].unique, True)
-        self.assertEqual(annr.fields['slug'].value, None)
 
         self.assertTrue(isinstance(annr.fields['title'], fields.CharField))
         self.assertEqual(annr.fields['title'].attribute, 'title')
@@ -1472,7 +1525,6 @@ class ModelResourceTestCase(TestCase):
         self.assertEqual(annr.fields['title'].null, False)
         self.assertEqual(annr.fields['title'].readonly, False)
         self.assertEqual(annr.fields['title'].unique, False)
-        self.assertEqual(annr.fields['title'].value, None)
 
         self.assertTrue(isinstance(annr.fields['updated'], fields.DateTimeField))
         self.assertEqual(annr.fields['updated'].attribute, 'updated')
@@ -1482,7 +1534,6 @@ class ModelResourceTestCase(TestCase):
         self.assertEqual(annr.fields['updated'].null, False)
         self.assertEqual(annr.fields['updated'].readonly, False)
         self.assertEqual(annr.fields['updated'].unique, False)
-        self.assertEqual(annr.fields['updated'].value, None)
 
     def test_urls(self):
         # The common case, where the ``Api`` specifies the name.
@@ -1513,26 +1564,62 @@ class ModelResourceTestCase(TestCase):
             'pk': 1,
         }), '/notes/1/')
 
-    def test_get_via_uri(self):
+    def test__get_via_uri(self):
         resource = NoteResource(api_name='v1')
         note_1 = resource.get_via_uri('/api/v1/notes/1/')
         self.assertEqual(note_1.pk, 1)
+
+    def test__get_via_uri__app_name_same_as_resource(self):
+        resource = NoteResource(api_name='v1')
         # Should work even if app name is the same as resource
         note_1 = resource.get_via_uri('/notes/api/v1/notes/1/')
         self.assertEqual(note_1.pk, 1)
 
+    def test__get_via_uri__uri_has_special_chars(self):
+        resource = NoteResource(api_name='v1')
+        # Should work even if app name is the same as resource
+        note_1 = resource.get_via_uri('/~krichy/api/v1/notes/1/')
+        self.assertEqual(note_1.pk, 1)
+
+    def test__get_via_uri__uri_has_encoded_special_chars(self):
+        resource = NoteResource(api_name='v1')
+        # Should work even if app name is the same as resource
+        note_1 = resource.get_via_uri('/%7ekrichy/api/v1/notes/1/')
+        self.assertEqual(note_1.pk, 1)
+
+    def test__get_via_uri__invalid_uri(self):
+        resource = NoteResource(api_name='v1')
         try:
-            should_fail = resource.get_via_uri('http://example.com/')
+            resource.get_via_uri('http://example.com/')
             self.fail("'get_via_uri' should fail miserably with something that isn't an object URI.")
         except NotFound:
             pass
 
+    def test__get_via_uri__bad_uri_containing_resource_name(self):
+        resource = NoteResource(api_name='v1')
+        with self.assertRaises(NotFound):
+            resource.get_via_uri('/notes/api/v1/photos/1/')
+
+    def test__get_via_uri__nonexistant_resource(self):
+        resource = NoteResource(api_name='v1')
+        with self.assertRaises(NotFound):
+            resource.get_via_uri('/api/v1/foo/1/')
+
+    def test__get_via_uri__different_resource(self):
+        resource = NoteResource(api_name='v1')
+        with self.assertRaises(NotFound):
+            resource.get_via_uri('/api/v1/photos/1/')
+
+    def test__get_via_uri__list_uri(self):
+        resource = NoteResource(api_name='v1')
         try:
-            should_also_fail = resource.get_via_uri('/api/v1/notes/')
+            resource.get_via_uri('/api/v1/notes/')
             self.fail("'get_via_uri' should fail miserably with something that isn't an object URI.")
         except MultipleObjectsReturned:
             pass
 
+    def test__get_via_uri__with_request(self):
+        resource = NoteResource(api_name='v1')
         # Check with the request.
         request = HttpRequest()
         note_1 = resource.get_via_uri('/api/v1/notes/1/', request=request)
@@ -1579,8 +1666,13 @@ class ModelResourceTestCase(TestCase):
         request.META = {'HTTP_ACCEPT': 'text/yaml'}
         self.assertEqual(resource.determine_format(request), 'text/yaml')
 
+        # unsupported text/html should return default format
         request.META = {'HTTP_ACCEPT': 'text/html'}
-        self.assertEqual(resource.determine_format(request), 'text/html')
+        self.assertEqual(resource.determine_format(request), 'application/json')
+
+        # unsupported applicaiton/octet-stream returns default format
+        request.META = {'HTTP_ACCEPT': 'application/octet-stream'}
+        self.assertEqual(resource.determine_format(request), 'application/json')
 
         request.META = {'HTTP_ACCEPT': 'application/json,application/xml;q=0.9,*/*;q=0.8'}
         self.assertEqual(resource.determine_format(request), 'application/json')
@@ -1588,19 +1680,14 @@ class ModelResourceTestCase(TestCase):
         request.META = {'HTTP_ACCEPT': 'text/plain,application/xml,application/json;q=0.9,*/*;q=0.8'}
         self.assertEqual(resource.determine_format(request), 'application/xml')
 
-    def adjust_schema(self, schema_dict):
-        for field, field_info in schema_dict['fields'].items():
-            if isinstance(field_info['default'], fields.NOT_PROVIDED):
-                schema_dict['fields'][field]['default'] = 'No default provided.'
-            if isinstance(field_info['default'], (datetime.datetime, datetime.date)):
-                schema_dict['fields'][field]['default'] = 'The current date.'
-
-        return schema_dict
+        # your typical browser (chrome, firefoxs, no plugins) should get back xml
+        request.META = {'HTTP_ACCEPT': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'}
+        self.assertEqual(resource.determine_format(request), 'application/xml')
 
     def test_build_schema(self):
         related = RelatedNoteResource()
-        schema = self.adjust_schema(related.build_schema())
-        self.assertEqual(schema, {
+        schema = adjust_schema(related.build_schema())
+        expected_schema = {
             'filtering': {
                 'subjects': 2,
                 'author': 1
@@ -1614,8 +1701,10 @@ class ModelResourceTestCase(TestCase):
                     'readonly': False,
                     'blank': False,
                     'help_text': 'A single related resource. Can be either a URI or set of nested resource data.',
+                    'verbose_name': 'The Author',
                     'unique': False,
-                    'type': 'related'
+                    'type': 'related',
+                    "primary_key": False
                 },
                 'title': {
                     'nullable': False,
@@ -1623,8 +1712,10 @@ class ModelResourceTestCase(TestCase):
                     'readonly': False,
                     'blank': False,
                     'help_text': 'Unicode string data. Ex: "Hello World"',
+                    'verbose_name': 'The Title',
                     'unique': False,
-                    'type': 'string'
+                    'type': 'string',
+                    "primary_key": False
                 },
                 'created': {
                     'nullable': False,
@@ -1632,8 +1723,10 @@ class ModelResourceTestCase(TestCase):
                     'readonly': False,
                     'blank': False,
                     'help_text': 'A date & time as a string. Ex: "2010-11-10T03:07:43"',
+                    'verbose_name': 'created',
                     'unique': False,
-                    'type': 'datetime'
+                    'type': 'datetime',
+                    "primary_key": False
                 },
                 'is_active': {
                     'nullable': False,
@@ -1641,8 +1734,10 @@ class ModelResourceTestCase(TestCase):
                     'readonly': False,
                     'blank': True,
                     'help_text': 'Boolean data. Ex: True',
+                    'verbose_name': 'is active',
                     'unique': False,
-                    'type': 'boolean'
+                    'type': 'boolean',
+                    "primary_key": False
                 },
                 'content': {
                     'nullable': False,
@@ -1650,8 +1745,10 @@ class ModelResourceTestCase(TestCase):
                     'readonly': False,
                     'blank': True,
                     'help_text': 'Unicode string data. Ex: "Hello World"',
+                    'verbose_name': 'content',
                     'unique': False,
-                    'type': 'string'
+                    'type': 'string',
+                    "primary_key": False
                 },
                 'subjects': {
                     'related_type': 'to_many',
@@ -1660,8 +1757,10 @@ class ModelResourceTestCase(TestCase):
                     'readonly': False,
                     'blank': False,
                     'help_text': 'Many related resources. Can be either a list of URIs or list of individually nested resource data.',
+                    'verbose_name': 'subjects',
                     'unique': False,
-                    'type': 'related'
+                    'type': 'related',
+                    "primary_key": False
                 },
                 'slug': {
                     'nullable': False,
@@ -1669,8 +1768,10 @@ class ModelResourceTestCase(TestCase):
                     'readonly': False,
                     'blank': False,
                     'help_text': 'Unicode string data. Ex: "Hello World"',
+                    'verbose_name': 'slug',
                     'unique': False,
-                    'type': 'string'
+                    'type': 'string',
+                    "primary_key": False
                 },
                 'resource_uri': {
                     'nullable': False,
@@ -1678,14 +1779,17 @@ class ModelResourceTestCase(TestCase):
                     'readonly': True,
                     'blank': False,
                     'help_text': 'Unicode string data. Ex: "Hello World"',
+                    'verbose_name': 'resource uri',
                     'unique': False,
-                    'type': 'string'
+                    'type': 'string',
+                    "primary_key": False
                 }
             },
             'default_format': 'application/json',
             'default_limit': 20,
             'allowed_list_http_methods': ['get', 'post', 'put', 'delete', 'patch']
-        })
+        }
+        self.assertEqual(schema, expected_schema)
 
     def test_build_filters(self):
         resource = NoteResource()
@@ -1922,7 +2026,7 @@ class ModelResourceTestCase(TestCase):
         try:
             resp = resource.get_list(request)
             self.fail()
-        except BadRequest as e:
+        except BadRequest:
             pass
 
         # Try again with ``wrap_view`` for sanity.
@@ -1934,7 +2038,7 @@ class ModelResourceTestCase(TestCase):
         try:
             resp = resource.get_list(request)
             self.fail()
-        except BadRequest as e:
+        except BadRequest:
             pass
 
         # Then an out of range limit.
@@ -1942,7 +2046,7 @@ class ModelResourceTestCase(TestCase):
         try:
             resp = resource.get_list(request)
             self.fail()
-        except BadRequest as e:
+        except BadRequest:
             pass
 
         # Valid slice.
@@ -2216,13 +2320,13 @@ class ModelResourceTestCase(TestCase):
             }
         ])
 
-        #invalid sorting
+        # invalid sorting
         request.GET = {'format': 'json', 'order_by': 'monkey'}
         resp = resource.wrap_view('get_list')(request)
         self.assertEqual(resp.status_code, 400)
         res = json.loads(resp.content.decode('utf-8'))
         self.assertTrue('error' in res.keys())
-        self.assertTrue('monkey' in res['error']) #Error looks like "No matching \'monkey\' field for ordering on.
+        self.assertTrue('monkey' in res['error'])  # Error looks like "No matching \'monkey\' field for ordering on.
 
         # Test to make sure we're not inadvertently caching the QuerySet.
         request.GET = {'format': 'json'}
@@ -2362,37 +2466,37 @@ class ModelResourceTestCase(TestCase):
         self.assertTrue('limit=3' in list_data['meta']['next'])
         self.assertTrue('offset=3' in list_data['meta']['next'])
         self.assertEqual(list_data['objects'], [
-                {
-                    "content": "This is my very first post using my shiny new API. Pretty sweet, huh?",
-                    "created": "2010-03-30T20:05:00",
-                    "id": 1,
-                    "is_active": True,
-                    "resource_uri": "/api/v1/notes/1/",
-                    "slug": "first-post",
-                    "title": "First Post!",
-                    "updated": "2010-03-30T20:05:00"
-                },
-                {
-                    "content": "The dog ate my cat today. He looks seriously uncomfortable.",
-                    "created": "2010-03-31T20:05:00",
-                    "id": 2,
-                    "is_active": True,
-                    "resource_uri": "/api/v1/notes/2/",
-                    "slug": "another-post",
-                    "title": "Another Post",
-                    "updated": "2010-03-31T20:05:00"
-                },
-                {
-                    "content": "My neighborhood\'s been kinda weird lately, especially after the lava flow took out the corner store. Granny can hardly outrun the magma with her walker.",
-                    "created": "2010-04-01T20:05:00",
-                    "id": 4,
-                    "is_active": True,
-                    "resource_uri": "/api/v1/notes/4/",
-                    "slug": "recent-volcanic-activity",
-                    "title": "Recent Volcanic Activity.",
-                    "updated": "2010-04-01T20:05:00"
-                }
-            ])
+            {
+                "content": "This is my very first post using my shiny new API. Pretty sweet, huh?",
+                "created": "2010-03-30T20:05:00",
+                "id": 1,
+                "is_active": True,
+                "resource_uri": "/api/v1/notes/1/",
+                "slug": "first-post",
+                "title": "First Post!",
+                "updated": "2010-03-30T20:05:00"
+            },
+            {
+                "content": "The dog ate my cat today. He looks seriously uncomfortable.",
+                "created": "2010-03-31T20:05:00",
+                "id": 2,
+                "is_active": True,
+                "resource_uri": "/api/v1/notes/2/",
+                "slug": "another-post",
+                "title": "Another Post",
+                "updated": "2010-03-31T20:05:00"
+            },
+            {
+                "content": "My neighborhood\'s been kinda weird lately, especially after the lava flow took out the corner store. Granny can hardly outrun the magma with her walker.",
+                "created": "2010-04-01T20:05:00",
+                "id": 4,
+                "is_active": True,
+                "resource_uri": "/api/v1/notes/4/",
+                "slug": "recent-volcanic-activity",
+                "title": "Recent Volcanic Activity.",
+                "updated": "2010-04-01T20:05:00"
+            }
+        ])
 
     def test_get_list_use_in(self):
         resource = UseInNoteResource()
@@ -2403,7 +2507,6 @@ class ModelResourceTestCase(TestCase):
         resp = json.loads(resp.content.decode('utf-8'))
         for note in resp['objects']:
             self.assertNotIn('content', note)
-
 
     def test_get_detail(self):
         resource = NoteResource()
@@ -2437,7 +2540,7 @@ class ModelResourceTestCase(TestCase):
         request.method = 'PUT'
 
         self.assertEqual(Note.objects.count(), 6)
-        setattr(request, self.body_attr, '{"objects": [{"content": "The cat is back. The dog coughed him up out back.", "created": "2010-04-03 20:05:00", "is_active": true, "slug": "cat-is-back-again", "title": "The Cat Is Back", "updated": "2010-04-03 20:05:00"}]}')
+        request.set_body('{"objects": [{"content": "The cat is back. The dog coughed him up out back.", "created": "2010-04-03 20:05:00", "is_active": true, "slug": "cat-is-back-again", "title": "The Cat Is Back", "updated": "2010-04-03 20:05:00"}]}')
 
         resp = resource.put_list(request)
         self.assertEqual(resp.status_code, 204)
@@ -2458,7 +2561,7 @@ class ModelResourceTestCase(TestCase):
         request.method = 'PUT'
 
         self.assertEqual(Note.objects.count(), 6)
-        setattr(request, self.body_attr, '{"objects": [{"content": "The cat is back. The dog coughed him up out back.", "created": "2010-04-03 20:05:00", "is_active": true, "slug": "cat-is-back-again", "title": "The Cat Is Back", "updated": "2010-04-03 20:05:00"}]}')
+        request.set_body('{"objects": [{"content": "The cat is back. The dog coughed him up out back.", "created": "2010-04-03 20:05:00", "is_active": true, "slug": "cat-is-back-again", "title": "The Cat Is Back", "updated": "2010-04-03 20:05:00"}]}')
 
         always_resource = AlwaysDataNoteResourceUseIn()
         resp = always_resource.put_list(request)
@@ -2475,7 +2578,7 @@ class ModelResourceTestCase(TestCase):
         request = MockRequest()
         request.GET = {'format': 'json'}
         request.method = 'PUT'
-        setattr(request, self.body_attr, '{"content": "The cat is back. The dog coughed him up out back.", "created": "2010-04-03 20:05:00", "is_active": true, "slug": "cat-is-back", "title": "The Cat Is Back", "updated": "2010-04-03 20:05:00"}')
+        request.set_body('{"content": "The cat is back. The dog coughed him up out back.", "created": "2010-04-03 20:05:00", "is_active": true, "slug": "cat-is-back", "title": "The Cat Is Back", "updated": "2010-04-03 20:05:00", "baddata": "some data"}')
 
         resp = resource.put_detail(request, pk=10)
         self.assertEqual(resp.status_code, 201)
@@ -2483,7 +2586,7 @@ class ModelResourceTestCase(TestCase):
         new_note = Note.objects.get(slug='cat-is-back')
         self.assertEqual(new_note.content, "The cat is back. The dog coughed him up out back.")
 
-        setattr(request, self.body_attr, '{"content": "The cat is gone again. I think it was the rabbits that ate him this time.", "created": "2010-04-03 20:05:00", "is_active": true, "slug": "cat-is-back", "title": "The Cat Is Gone", "updated": "2010-04-03 20:05:00"}')
+        request.set_body('{"content": "The cat is gone again. I think it was the rabbits that ate him this time.", "created": "2010-04-03 20:05:00", "is_active": true, "slug": "cat-is-back", "title": "The Cat Is Gone", "updated": "2010-04-03 20:05:00"}')
 
         resp = resource.put_detail(request, pk=10)
         self.assertEqual(resp.status_code, 204)
@@ -2502,6 +2605,7 @@ class ModelResourceTestCase(TestCase):
         self.assertTrue("resource_uri" in data)
         self.assertTrue("title" in data)
         self.assertTrue("is_active" in data)
+        self.assertFalse("baddata" in data)
 
         # Now make sure we can null-out a relation.
         # Associate some data first.
@@ -2512,7 +2616,7 @@ class ModelResourceTestCase(TestCase):
         request = MockRequest()
         request.GET = {'format': 'json'}
         request.method = 'PUT'
-        setattr(request, self.body_attr, '{"content": "The cat is back. The dog coughed him up out back.", "created": "2010-04-03 20:05:00", "is_active": true, "slug": "cat-is-back", "title": "The Cat Is Back", "updated": "2010-04-03 20:05:00", "author": null}')
+        request.set_body('{"content": "The cat is back. The dog coughed him up out back.", "created": "2010-04-03 20:05:00", "is_active": true, "slug": "cat-is-back", "title": "The Cat Is Back", "updated": "2010-04-03 20:05:00", "author": null}')
 
         resp = nullable_resource.put_detail(request, pk=10)
         self.assertEqual(resp.status_code, 204)
@@ -2528,7 +2632,7 @@ class ModelResourceTestCase(TestCase):
         request = MockRequest()
         request.GET = {'format': 'json'}
         request.method = 'PUT'
-        setattr(request, self.body_attr, '{"content": "The cat is back. The dog coughed him up out back.", "created": "2010-04-03 20:05:00", "is_active": true, "slug": "cat-is-back", "title": "The Cat Is Back", "updated": "2010-04-03 20:05:00"}')
+        request.set_body('{"content": "The cat is back. The dog coughed him up out back.", "created": "2010-04-03 20:05:00", "is_active": true, "slug": "cat-is-back", "title": "The Cat Is Back", "updated": "2010-04-03 20:05:00"}')
 
         always_resource = AlwaysDataNoteResourceUseIn()
         resp = always_resource.put_detail(request, pk=new_note.pk)
@@ -2546,7 +2650,7 @@ class ModelResourceTestCase(TestCase):
         request = MockRequest()
         request.GET = {'format': 'json'}
         request.method = 'PUT'
-        setattr(request, self.body_attr, '{"date": "2012-09-07", "username": "WAT", "message": "hello"}')
+        request.set_body('{"date": "2012-09-07", "username": "WAT", "message": "hello"}')
 
         date_record_resource = DateRecordResource()
         resp = date_record_resource.put_detail(request, username="maraujop")
@@ -2558,19 +2662,19 @@ class ModelResourceTestCase(TestCase):
         request = MockRequest()
         request.GET = {'format': 'json'}
         request.method = 'PUT'
-        setattr(request, self.body_attr, '{"date": "WAT", "username": "maraujop", "message": "hello"}')
+        request.set_body('{"date": "WAT", "username": "maraujop", "message": "hello"}')
 
         date_record_resource = DateRecordResource()
         resp = date_record_resource.put_detail(request, date="2012-09-07")
 
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.content.decode('utf-8'))
-        self.assertEqual(data['date'], "2012-09-07T00:00:00")
+        self.assertEqual(data['date'], "2012-09-07")
 
         request = MockRequest()
         request.GET = {'format': 'json'}
         request.method = 'PUT'
-        setattr(request, self.body_attr, '{"date": "2012-09-07", "username": "maraujop", "message": "WAT"}')
+        request.set_body('{"date": "2012-09-07", "username": "maraujop", "message": "WAT"}')
         date_record_resource = DateRecordResource()
         resp = date_record_resource.put_detail(request, message="HELLO")
 
@@ -2578,13 +2682,102 @@ class ModelResourceTestCase(TestCase):
         data = json.loads(resp.content.decode('utf-8'))
         self.assertEqual(data['message'], "hello")
 
+    def test_put_detail_with_non_unique_detail_uri_name(self):
+        """
+        Make sure when something besides 'pk' is used for detail_uri_name and
+        it isn't unique that we still look up the correct object and don't
+        create a duplicate.
+        """
+        self.assertFalse(Note._meta.get_field('slug').unique)
+
+        new_note = Note.objects.get(slug='another-post')
+        new_note.author = User.objects.get(username='johndoe')
+        new_note.save()
+
+        self.assertEqual(Note.objects.count(), 6)
+
+        request = MockRequest()
+        request.GET = {'format': 'json'}
+        request.method = 'PUT'
+        request.set_body('{"content": "The cat is back. The dog coughed him up out back.", "created": "2010-04-03 20:05:00", "is_active": true, "title": "The Cat Is Back", "updated": "2010-04-03 20:05:00"}')
+
+        resource = NoteResourceNonUniqueDetailUriName()
+        resp = resource.put_detail(request, slug=new_note.slug)
+
+        self.assertEqual(resp.status_code, 200)
+
+        self.assertEqual(Note.objects.count(), 6)
+
+        data = json.loads(resp.content.decode('utf-8'))
+
+        self.assertEqual(data["id"], new_note.pk)
+        self.assertEqual(data["slug"], new_note.slug)
+        self.assertTrue("author" in data)
+        self.assertFalse("constant" in data)
+        self.assertTrue("resource_uri" in data)
+        self.assertTrue("title" in data)
+        self.assertTrue("is_active" in data)
+
+    @skipIf(MyUUIDModel is None, 'UUIDField not available')
+    def test_put_detail_with_non_unique_uuid_detail_uri_name(self):
+        """
+        Make sure when something besides 'pk' is used for detail_uri_name and
+        it isn't unique that we still look up the correct object and don't
+        create a duplicate.
+        """
+        self.assertFalse(MyUUIDModel._meta.get_field('anotheruuid').unique)
+
+        myuuidmodel = MyUUIDModel.objects.create()
+
+        self.assertEqual(MyUUIDModel.objects.count(), 1)
+
+        request = MockRequest()
+        request.GET = {'format': 'json'}
+        request.method = 'PUT'
+        request.set_body('{"content": "The cat is back. The dog coughed him up out back."}')
+
+        resource = MyUUIDModelResourceNonUniqueDetailUriName()
+        resp = resource.put_detail(request, anotheruuid=myuuidmodel.anotheruuid)
+
+        self.assertEqual(resp.status_code, 200)
+
+        self.assertEqual(MyUUIDModel.objects.count(), 1)
+
+        data = json.loads(resp.content.decode('utf-8'))
+
+        self.assertEqual(data["id"], str(myuuidmodel.pk))
+        self.assertEqual(data["anotheruuid"], str(myuuidmodel.anotheruuid))
+        self.assertNotEqual(data["content"], '')
+
+    def test_put_detail_with_default_pk(self):
+        obj = MyDefaultPKModel.objects.create()
+
+        self.assertEqual(MyDefaultPKModel.objects.count(), 1)
+
+        request = MockRequest()
+        request.GET = {'format': 'json'}
+        request.method = 'PUT'
+        request.set_body('{"content": "The cat is back. The dog coughed him up out back."}')
+
+        resource = MyDefaultPKModelResource()
+        resp = resource.put_detail(request, pk=obj.pk)
+
+        self.assertEqual(resp.status_code, 200)
+
+        self.assertEqual(MyDefaultPKModel.objects.count(), 1)
+
+        data = json.loads(resp.content.decode('utf-8'))
+
+        self.assertEqual(data["id"], obj.pk)
+        self.assertNotEqual(data["content"], '')
+
     def test_post_list(self):
         self.assertEqual(Note.objects.count(), 6)
         resource = NoteResource()
         request = MockRequest()
         request.GET = {'format': 'json'}
         request.method = 'POST'
-        setattr(request, self.body_attr, '{"content": "The cat is back. The dog coughed him up out back.", "created": "2010-04-03 20:05:00", "is_active": true, "slug": "cat-is-back", "title": "The Cat Is Back", "updated": "2010-04-03 20:05:00"}')
+        request.set_body('{"content": "The cat is back. The dog coughed him up out back.", "created": "2010-04-03 20:05:00", "is_active": true, "slug": "cat-is-back", "title": "The Cat Is Back", "updated": "2010-04-03 20:05:00"}')
 
         resp = resource.post_list(request)
         self.assertEqual(resp.status_code, 201)
@@ -3008,7 +3201,7 @@ class ModelResourceTestCase(TestCase):
         try:
             resp = resource.dispatch_detail(request, pk=1)
             self.fail()
-        except BadRequest as e:
+        except BadRequest:
             pass
 
         # Try again with ``wrap_view`` for sanity.
@@ -3031,14 +3224,13 @@ class ModelResourceTestCase(TestCase):
         request.method = 'GET'
 
         # Patch the ``created/updated`` defaults for testability.
-        old_created = resource.fields['created']._default
-        old_updated = resource.fields['updated']._default
-        resource.fields['created']._default = aware_datetime(2011, 9, 24, 0, 2)
-        resource.fields['updated']._default = aware_datetime(2011, 9, 24, 0, 2)
+        with patch.object(resource.fields['created'], '_default', new=aware_datetime(2011, 9, 24, 0, 2)):
+            with patch.object(resource.fields['updated'], '_default', new=aware_datetime(2011, 9, 24, 0, 2)):
+                resp = resource.get_schema(request)
 
-        resp = resource.get_schema(request)
         self.assertEqual(resp.status_code, 200)
-        schema = {
+
+        expected_schema = {
             "allowed_detail_http_methods": ["get", "post", "put", "delete", "patch"],
             "allowed_list_http_methods": ["get", "post", "put", "delete", "patch"],
             "default_format": "application/json",
@@ -3048,73 +3240,89 @@ class ModelResourceTestCase(TestCase):
                     "blank": True,
                     "default": "",
                     "help_text": "Unicode string data. Ex: \"Hello World\"",
+                    "verbose_name": 'content',
                     "nullable": False,
                     "readonly": False,
                     "type": "string",
-                    "unique": False
+                    "unique": False,
+                    "primary_key": False
                 },
                 "created": {
                     "blank": False,
                     "default": "2011-09-24T00:02:00",
                     "help_text": "A date & time as a string. Ex: \"2010-11-10T03:07:43\"",
+                    "verbose_name": 'created',
                     "nullable": False,
                     "readonly": False,
                     "type": "datetime",
-                    "unique": False
+                    "unique": False,
+                    "primary_key": False
                 },
                 "id": {
                     "blank": True,
                     "default": "",
                     "help_text": "Integer data. Ex: 2673",
+                    "verbose_name": 'ID',
                     "nullable": False,
                     "readonly": False,
                     "type": "integer",
-                    "unique": True
+                    "unique": True,
+                    "primary_key": True
                 },
                 "is_active": {
                     "blank": True,
                     "default": True,
                     "help_text": "Boolean data. Ex: True",
+                    "verbose_name": 'is active',
                     "nullable": False,
                     "readonly": False,
                     "type": "boolean",
-                    "unique": False
+                    "unique": False,
+                    "primary_key": False
                 },
                 "resource_uri": {
                     "blank": False,
                     "default": "No default provided.",
                     "help_text": "Unicode string data. Ex: \"Hello World\"",
+                    "verbose_name": 'resource uri',
                     "nullable": False,
                     "readonly": True,
                     "type": "string",
-                    "unique": False
+                    "unique": False,
+                    "primary_key": False
                 },
                 "slug": {
                     "blank": False,
                     "default": "No default provided.",
                     "help_text": "Unicode string data. Ex: \"Hello World\"",
+                    "verbose_name": 'slug',
                     "nullable": False,
                     "readonly": False,
                     "type": "string",
-                    "unique": False
+                    "unique": False,
+                    "primary_key": False
                 },
                 "title": {
                     "blank": False,
                     "default": "No default provided.",
                     "help_text": "Unicode string data. Ex: \"Hello World\"",
+                    "verbose_name": 'The Title',
                     "nullable": False,
                     "readonly": False,
                     "type": "string",
-                    "unique": False
+                    "unique": False,
+                    "primary_key": False
                 },
                 "updated": {
                     "blank": False,
                     "default": "2011-09-24T00:02:00",
                     "help_text": "A date & time as a string. Ex: \"2010-11-10T03:07:43\"",
+                    "verbose_name": 'updated',
                     "nullable": False,
                     "readonly": False,
                     "type": "datetime",
-                    "unique": False
+                    "unique": False,
+                    "primary_key": False
                 }
             },
             "filtering": {
@@ -3124,11 +3332,131 @@ class ModelResourceTestCase(TestCase):
             },
             "ordering": ["title", "slug", "resource_uri"],
         }
-        self.assertEqual(json.loads(resp.content.decode('utf-8')), schema)
 
-        # Unpatch.
-        resource.fields['created']._default = old_created
-        resource.fields['updated']._default = old_updated
+        schema = json.loads(resp.content.decode('utf-8'))
+
+        self.assertEqual(schema, expected_schema)
+
+    def test_get_schema_with_related(self):
+        resource = RelatedNoteResource()
+
+        request = HttpRequest()
+        request.GET = {'format': 'json'}
+        request.method = 'GET'
+
+        # Patch the ``created/updated`` defaults for testability.
+        with patch.object(resource.fields['created'], '_default', new=aware_datetime(2011, 9, 24, 0, 2)):
+            resp = resource.get_schema(request)
+
+        self.assertEqual(resp.status_code, 200)
+
+        expected_schema = {
+            "allowed_detail_http_methods": ["get", "post", "put", "delete", "patch"],
+            "allowed_list_http_methods": ["get", "post", "put", "delete", "patch"],
+            "default_format": "application/json",
+            "default_limit": 20,
+            "fields": {
+                "content": {
+                    "blank": True,
+                    "default": "",
+                    "help_text": "Unicode string data. Ex: \"Hello World\"",
+                    "verbose_name": 'content',
+                    "nullable": False,
+                    "readonly": False,
+                    "type": "string",
+                    "unique": False,
+                    "primary_key": False
+                },
+                "created": {
+                    "blank": False,
+                    "default": "2011-09-24T00:02:00",
+                    "help_text": "A date & time as a string. Ex: \"2010-11-10T03:07:43\"",
+                    "verbose_name": 'created',
+                    "nullable": False,
+                    "readonly": False,
+                    "type": "datetime",
+                    "unique": False,
+                    "primary_key": False
+                },
+                "is_active": {
+                    "blank": True,
+                    "default": True,
+                    "help_text": "Boolean data. Ex: True",
+                    "verbose_name": 'is active',
+                    "nullable": False,
+                    "readonly": False,
+                    "type": "boolean",
+                    "unique": False,
+                    "primary_key": False
+                },
+                "resource_uri": {
+                    "blank": False,
+                    "default": "No default provided.",
+                    "help_text": "Unicode string data. Ex: \"Hello World\"",
+                    "verbose_name": 'resource uri',
+                    "nullable": False,
+                    "readonly": True,
+                    "type": "string",
+                    "unique": False,
+                    "primary_key": False
+                },
+                "slug": {
+                    "blank": False,
+                    "default": "No default provided.",
+                    "help_text": "Unicode string data. Ex: \"Hello World\"",
+                    "verbose_name": 'slug',
+                    "nullable": False,
+                    "readonly": False,
+                    "type": "string",
+                    "unique": False,
+                    "primary_key": False
+                },
+                "title": {
+                    "blank": False,
+                    "default": "No default provided.",
+                    "help_text": "Unicode string data. Ex: \"Hello World\"",
+                    "verbose_name": 'The Title',
+                    "nullable": False,
+                    "readonly": False,
+                    "type": "string",
+                    "unique": False,
+                    "primary_key": False
+                },
+                'author': {
+                    "blank": False,
+                    "default": "No default provided.",
+                    "help_text": 'A single related resource. Can be either a URI or set of nested resource data.',
+                    "verbose_name": 'The Author',
+                    "readonly": False,
+                    "nullable": False,
+                    "type": 'related',
+                    "unique": False,
+                    "primary_key": False,
+                    "related_type": 'to_one'
+                },
+                'subjects': {
+                    "blank": False,
+                    "default": "No default provided.",
+                    "help_text": 'Many related resources. Can be either a list of URIs or list of individually nested resource data.',
+                    "verbose_name": 'subjects',
+                    "readonly": False,
+                    "nullable": False,
+                    "type": 'related',
+                    "unique": False,
+                    "primary_key": False,
+                    "related_type": 'to_many'
+                }
+            },
+            'default_format': 'application/json',
+            'filtering': {
+                'author': ALL,
+                'subjects': ALL_WITH_RELATIONS,
+            },
+        }
+
+        schema = json.loads(resp.content.decode('utf-8'))
+
+        self.assertEqual(schema, expected_schema)
 
     def test_get_multiple(self):
         resource = NoteResource()
@@ -3186,12 +3514,28 @@ class ModelResourceTestCase(TestCase):
             self.assertIn('constant', note)
             self.assertNotIn('author', note)
 
-    def test_check_throttling(self):
+    @patch('tastypie.throttle.time')
+    def test_check_bool_throttling(self, mocked_time):
+        mocked_time.time.return_value = time.time()
         # Stow.
         old_debug = settings.DEBUG
         settings.DEBUG = False
 
         resource = ThrottledNoteResource()
+        _orginal_throttle = resource._meta.throttle
+
+        class BoolThrottle(resource._meta.throttle.__class__):
+            def should_be_throttled(self, *args, **kwargs):
+                ret = super(BoolThrottle, self).should_be_throttled(*args, **kwargs)
+                if ret:
+                    return True
+                return False
+        resource._meta.throttle = BoolThrottle(
+            throttle_at=resource._meta.throttle.throttle_at,
+            timeframe=resource._meta.throttle.timeframe,
+            expiration=resource._meta.throttle.expiration
+        )
+
         request = HttpRequest()
         request.GET = {'format': 'json'}
         request.method = 'GET'
@@ -3212,6 +3556,7 @@ class ModelResourceTestCase(TestCase):
             self.fail()
         except ImmediateHttpResponse as e:
             self.assertEqual(e.response.status_code, 429)
+            self.assertNotIn('Retry-After', e.response)
             self.assertEqual(len(cache.get('noaddr_nohost_accesses')), 2)
 
         # Throttled.
@@ -3220,22 +3565,143 @@ class ModelResourceTestCase(TestCase):
             self.fail()
         except ImmediateHttpResponse as e:
             self.assertEqual(e.response.status_code, 429)
+            self.assertNotIn('Retry-After', e.response)
             self.assertEqual(len(cache.get('noaddr_nohost_accesses')), 2)
 
         # Check the ``wrap_view``.
         resp = resource.wrap_view('dispatch_list')(request)
         self.assertEqual(resp.status_code, 429)
+        self.assertNotIn('Retry-After', resp)
         self.assertEqual(len(cache.get('noaddr_nohost_accesses')), 2)
 
         # Restore.
         settings.DEBUG = old_debug
+        resource._meta.throttle = _orginal_throttle
+
+    @patch('tastypie.throttle.time')
+    def test_check_int_throttling(self, mocked_time):
+        mocked_time.time.return_value = time.time()
+        # Stow.
+        old_debug = settings.DEBUG
+        settings.DEBUG = False
+
+        resource = ThrottledNoteResource()
+        _orginal_throttle = resource._meta.throttle
+        request = HttpRequest()
+        request.GET = {'format': 'json'}
+        request.method = 'GET'
+
+        # Not throttled.
+        resp = resource.dispatch('list', request)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(cache.get('noaddr_nohost_accesses')), 1)
+
+        # Not throttled.
+        resp = resource.dispatch('list', request)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(cache.get('noaddr_nohost_accesses')), 2)
+
+        # Throttled.
+        try:
+            resp = resource.dispatch('list', request)
+            self.fail()
+        except ImmediateHttpResponse as e:
+            self.assertEqual(e.response.status_code, 429)
+            self.assertEqual(e.response['Retry-After'], '5')
+            self.assertEqual(len(cache.get('noaddr_nohost_accesses')), 2)
+
+        # Throttled.
+        try:
+            resp = resource.dispatch('list', request)
+            self.fail()
+        except ImmediateHttpResponse as e:
+            self.assertEqual(e.response.status_code, 429)
+            self.assertEqual(e.response['Retry-After'], '5')
+            self.assertEqual(len(cache.get('noaddr_nohost_accesses')), 2)
+
+        # Check the ``wrap_view``.
+        resp = resource.wrap_view('dispatch_list')(request)
+        self.assertEqual(resp.status_code, 429)
+        self.assertEqual(resp['Retry-After'], '5')
+        self.assertEqual(len(cache.get('noaddr_nohost_accesses')), 2)
+
+        # Restore.
+        settings.DEBUG = old_debug
+        resource._meta.throttle = _orginal_throttle
+
+    @patch('tastypie.throttle.time')
+    def test_check_datetime_throttling(self, mocked_time):
+        mocked_time.time.return_value = time.time()
+        # Stow.
+        old_debug = settings.DEBUG
+        settings.DEBUG = False
+
+        retry_after = datetime.datetime(year=2014, month=8, day=8, hour=8, minute=55, tzinfo=timezone.utc)
+        retry_after_str = 'Fri, 08 Aug 2014 14:55:00 GMT'
+
+        resource = ThrottledNoteResource()
+        _orginal_throttle = resource._meta.throttle
+
+        class DatetimeThrottle(resource._meta.throttle.__class__):
+            def should_be_throttled(self, *args, **kwargs):
+                ret = super(DatetimeThrottle, self).should_be_throttled(*args, **kwargs)
+                if ret:
+                    return retry_after
+                return False
+        resource._meta.throttle = DatetimeThrottle(
+            throttle_at=resource._meta.throttle.throttle_at,
+            timeframe=resource._meta.throttle.timeframe,
+            expiration=resource._meta.throttle.expiration
+        )
+
+        request = HttpRequest()
+        request.GET = {'format': 'json'}
+        request.method = 'GET'
+
+        # Not throttled.
+        resp = resource.dispatch('list', request)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(cache.get('noaddr_nohost_accesses')), 1)
+
+        # Not throttled.
+        resp = resource.dispatch('list', request)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(cache.get('noaddr_nohost_accesses')), 2)
+
+        # Throttled.
+        try:
+            resp = resource.dispatch('list', request)
+            self.fail()
+        except ImmediateHttpResponse as e:
+            self.assertEqual(e.response.status_code, 429)
+            self.assertEqual(e.response['Retry-After'], retry_after_str)
+            self.assertEqual(len(cache.get('noaddr_nohost_accesses')), 2)
+
+        # Throttled.
+        try:
+            resp = resource.dispatch('list', request)
+            self.fail()
+        except ImmediateHttpResponse as e:
+            self.assertEqual(e.response.status_code, 429)
+            self.assertEqual(e.response['Retry-After'], retry_after_str)
+            self.assertEqual(len(cache.get('noaddr_nohost_accesses')), 2)
+
+        # Check the ``wrap_view``.
+        resp = resource.wrap_view('dispatch_list')(request)
+        self.assertEqual(resp.status_code, 429)
+        self.assertEqual(resp['Retry-After'], retry_after_str)
+        self.assertEqual(len(cache.get('noaddr_nohost_accesses')), 2)
+
+        # Restore.
+        settings.DEBUG = old_debug
+        resource._meta.throttle = _orginal_throttle
 
     def test_generate_cache_key(self):
-        resource = NoteResource()
-        self.assertEqual(resource.generate_cache_key(), 'None:notes::')
-        self.assertEqual(resource.generate_cache_key('abc', '123'), 'None:notes:abc:123:')
-        self.assertEqual(resource.generate_cache_key(foo='bar', moof='baz'), 'None:notes::foo=bar:moof=baz')
-        self.assertEqual(resource.generate_cache_key('abc', '123', foo='bar', moof='baz'), 'None:notes:abc:123:foo=bar:moof=baz')
+        resource = NoteResource(api_name='v1')
+        self.assertEqual(resource.generate_cache_key(), 'v1:notes::')
+        self.assertEqual(resource.generate_cache_key('abc', '123'), 'v1:notes:abc:123:')
+        self.assertEqual(resource.generate_cache_key(foo='bar', moof='baz'), 'v1:notes::foo=bar:moof=baz')
+        self.assertEqual(resource.generate_cache_key('abc', '123', foo='bar', moof='baz'), 'v1:notes:abc:123:foo=bar:moof=baz')
 
     def test_cached_fetch_list(self):
         resource = NoteResource()
@@ -3274,13 +3740,13 @@ class ModelResourceTestCase(TestCase):
     def test_obj_delete_list_custom_qs(self):
         self.assertEqual(len(Note.objects.all()), 6)
         base_bundle = Bundle()
-        notes = NoteResource().obj_delete_list(base_bundle)
+        NoteResource().obj_delete_list(base_bundle)
         self.assertEqual(len(Note.objects.all()), 2)
 
     def test_obj_delete_list_basic_qs(self):
         self.assertEqual(len(Note.objects.all()), 6)
         base_bundle = Bundle()
-        customs = VeryCustomNoteResource().obj_delete_list(base_bundle)
+        VeryCustomNoteResource().obj_delete_list(base_bundle)
         self.assertEqual(len(Note.objects.all()), 0)
 
     def test_obj_delete_list_non_queryset(self):
@@ -3295,7 +3761,7 @@ class ModelResourceTestCase(TestCase):
         request.method = 'DELETE'
         self.assertEqual(len(Note.objects.all()), 6)
         # This is a regression. Used to fail miserably.
-        notes = NonQuerysetNoteResource().delete_list(request=request)
+        NonQuerysetNoteResource().delete_list(request=request)
         self.assertEqual(len(Note.objects.all()), 4)
 
     def test_obj_delete_list_filtered(self):
@@ -3305,7 +3771,7 @@ class ModelResourceTestCase(TestCase):
 
         request = HttpRequest()
         request.method = 'DELETE'
-        request.GET = {'slug':str(note_to_delete.slug)}
+        request.GET = {'slug': str(note_to_delete.slug)}
         NoteResource().delete_list(request=request)
         self.assertEqual(len(Note.objects.all()), 5)
 
@@ -3635,7 +4101,6 @@ class ModelResourceTestCase(TestCase):
                 default_format = 'application/xml'
 
         validated = ValidatedNoteResource()
-        validated_xml = ValidatedXMLNoteResource()
 
         # Test empty data.
         bundle = Bundle(data={})
@@ -3753,13 +4218,10 @@ class ModelResourceTestCase(TestCase):
             'title': "Foo",
         })
 
-        try:
+        with self.assertRaises(ValueError):
             # This is where things blow up, because you can't assign
             # ``None`` to a required FK.
             hydrated1 = nmbr.full_hydrate(bundle_1)
-            self.fail()
-        except (Note.DoesNotExist, ValueError):
-            pass
 
         # So we introduced ``blank=True``.
         bmbr = BlankMediaBitResource()
@@ -3794,10 +4256,7 @@ class ModelResourceTestCase(TestCase):
         self.assertEqual(hydrated2.data['subjects'], [])
 
         # Regression pt. II - Make sure saving the objects works.
-        bundle_3 = Bundle(data={
-            'author': '/api/v1/user/1/',
-        })
-        hydrated3 = nrrnr.obj_create(bundle_2)
+        nrrnr.obj_create(bundle_2)
         self.assertEqual(hydrated2.obj.author.username, u'johndoe')
         self.assertEqual(hydrated2.obj.subjects.count(), 0)
 
@@ -3894,13 +4353,13 @@ class ModelResourceTestCase(TestCase):
         self.assertEqual(ponr._post_limits, 1)
 
         try:
-            too_many = ponr.obj_get(bundle=base_bundle, is_active=True, pk__gte=1)
+            ponr.obj_get(bundle=base_bundle, is_active=True, pk__gte=1)
             self.fail()
         except MultipleObjectsReturned as e:
             self.assertEqual(str(e), "More than 'Note' matched 'is_active=True, pk__gte=1'.")
 
         try:
-            too_many = ponr.obj_get(bundle=base_bundle, pk=1000000)
+            ponr.obj_get(bundle=base_bundle, pk=1000000)
             self.fail()
         except Note.DoesNotExist as e:
             self.assertEqual(str(e), "Couldn't find an instance of 'Note' which matched 'pk=1000000'.")
@@ -3962,7 +4421,6 @@ class ModelResourceTestCase(TestCase):
         hydrated_2 = rornr.full_hydrate(hbundle_2)
         self.assertEqual(hydrated_2.obj.author.username, 'johndoe')
 
-
     def test_readonly_save_related(self):
         rornr = ReadOnlyRelatedNoteResource()
         note = Note.objects.get(pk=1)
@@ -3997,14 +4455,12 @@ class ModelResourceTestCase(TestCase):
         finally:
             related_obj.save = _real_save
 
-
     def test_collection_name(self):
         resource = AlternativeCollectionNameNoteResource()
         request = HttpRequest()
         response = resource.get_list(request)
         response_data = json.loads(force_text(response.content))
         self.assertTrue('alt_objects' in response_data)
-
 
     def test_collection_name_patch_list(self):
         """Test that patch list accepts alternative names"""
@@ -4117,7 +4573,7 @@ class BustedResourceTestCase(TestCase):
         settings.TASTYPIE_FULL_DEBUG = True
 
         try:
-            resp = self.resource.wrap_view('get_list')(self.request, pk=1)
+            self.resource.wrap_view('get_list')(self.request, pk=1)
             self.fail()
         except YouFail:
             pass
